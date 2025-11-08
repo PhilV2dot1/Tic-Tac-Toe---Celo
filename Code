@@ -1,0 +1,365 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+/**
+ * @title TicTacToeSolo
+ * @dev Jeu de Tic Tac Toe en mode solo contre l'IA avec leaderboard
+ */
+contract TicTacToeSolo {
+    
+    // Structure pour une partie
+    struct Game {
+        address player;
+        uint8[9] board; // 0 = vide, 1 = joueur (X), 2 = IA (O)
+        uint8 currentTurn; // 1 = joueur, 2 = IA
+        GameStatus status;
+        uint256 startTime;
+        uint256 endTime;
+        uint8 moveCount;
+    }
+    
+    // Statut du jeu
+    enum GameStatus {
+        Active,
+        PlayerWin,
+        AIWin,
+        Draw,
+        Abandoned
+    }
+    
+    // Structure pour les statistiques d'un joueur
+    struct PlayerStats {
+        uint256 gamesPlayed;
+        uint256 wins;
+        uint256 losses;
+        uint256 draws;
+        uint256 totalMoves;
+        uint256 fastestWin; // en secondes
+        uint256 currentStreak;
+        uint256 bestStreak;
+    }
+    
+    // Structure pour le leaderboard
+    struct LeaderboardEntry {
+        address player;
+        uint256 wins;
+        uint256 winRate; // pourcentage * 100
+        uint256 bestStreak;
+        uint256 fastestWin;
+    }
+    
+    // Mapping des parties actives
+    mapping(address => Game) public activeGames;
+    
+    // Mapping des statistiques des joueurs
+    mapping(address => PlayerStats) public playerStats;
+    
+    // Liste des joueurs pour le leaderboard
+    address[] public players;
+    mapping(address => bool) public hasPlayed;
+    
+    // Événements
+    event GameStarted(address indexed player, uint256 timestamp);
+    event MoveMade(address indexed player, uint8 position, uint8 playerType);
+    event GameEnded(address indexed player, GameStatus status, uint256 duration);
+    event NewRecord(address indexed player, string recordType, uint256 value);
+    
+    /**
+     * @dev Démarre une nouvelle partie
+     */
+    function startGame() external {
+        require(activeGames[msg.sender].status != GameStatus.Active, "Partie deja en cours");
+        
+        // Initialiser une nouvelle partie
+        Game storage game = activeGames[msg.sender];
+        game.player = msg.sender;
+        game.board = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+        game.currentTurn = 1; // Le joueur commence
+        game.status = GameStatus.Active;
+        game.startTime = block.timestamp;
+        game.moveCount = 0;
+        
+        // Ajouter le joueur à la liste si première partie
+        if (!hasPlayed[msg.sender]) {
+            players.push(msg.sender);
+            hasPlayed[msg.sender] = true;
+        }
+        
+        emit GameStarted(msg.sender, block.timestamp);
+    }
+    
+    /**
+     * @dev Le joueur fait un mouvement
+     * @param position Position sur le plateau (0-8)
+     */
+    function makeMove(uint8 position) external {
+        Game storage game = activeGames[msg.sender];
+        
+        require(game.status == GameStatus.Active, "Aucune partie active");
+        require(game.currentTurn == 1, "Ce n'est pas votre tour");
+        require(position < 9, "Position invalide");
+        require(game.board[position] == 0, "Case deja occupee");
+        
+        // Placer le mouvement du joueur
+        game.board[position] = 1;
+        game.moveCount++;
+        emit MoveMade(msg.sender, position, 1);
+        
+        // Vérifier si le joueur a gagné
+        if (checkWin(game.board, 1)) {
+            endGame(msg.sender, GameStatus.PlayerWin);
+            return;
+        }
+        
+        // Vérifier match nul
+        if (game.moveCount == 9) {
+            endGame(msg.sender, GameStatus.Draw);
+            return;
+        }
+        
+        // Tour de l'IA
+        game.currentTurn = 2;
+        makeAIMove(msg.sender);
+    }
+    
+    /**
+     * @dev L'IA fait son mouvement (logique simple)
+     */
+    function makeAIMove(address player) internal {
+        Game storage game = activeGames[player];
+        
+        // Stratégie de l'IA: 
+        // 1. Gagner si possible
+        // 2. Bloquer le joueur s'il peut gagner
+        // 3. Prendre le centre si disponible
+        // 4. Prendre un coin
+        // 5. Prendre n'importe quelle case
+        
+        uint8 move = findWinningMove(game.board, 2);
+        if (move == 255) {
+            move = findWinningMove(game.board, 1); // Bloquer
+        }
+        if (move == 255 && game.board[4] == 0) {
+            move = 4; // Centre
+        }
+        if (move == 255) {
+            uint8[4] memory corners = [0, 2, 6, 8];
+            for (uint8 i = 0; i < 4; i++) {
+                if (game.board[corners[i]] == 0) {
+                    move = corners[i];
+                    break;
+                }
+            }
+        }
+        if (move == 255) {
+            for (uint8 i = 0; i < 9; i++) {
+                if (game.board[i] == 0) {
+                    move = i;
+                    break;
+                }
+            }
+        }
+        
+        game.board[move] = 2;
+        game.moveCount++;
+        emit MoveMade(player, move, 2);
+        
+        // Vérifier si l'IA a gagné
+        if (checkWin(game.board, 2)) {
+            endGame(player, GameStatus.AIWin);
+            return;
+        }
+        
+        // Vérifier match nul
+        if (game.moveCount == 9) {
+            endGame(player, GameStatus.Draw);
+            return;
+        }
+        
+        // Retour au tour du joueur
+        game.currentTurn = 1;
+    }
+    
+    /**
+     * @dev Trouve un mouvement gagnant pour un joueur
+     */
+    function findWinningMove(uint8[9] memory board, uint8 player) internal pure returns (uint8) {
+        for (uint8 i = 0; i < 9; i++) {
+            if (board[i] == 0) {
+                board[i] = player;
+                if (checkWin(board, player)) {
+                    return i;
+                }
+                board[i] = 0;
+            }
+        }
+        return 255; // Pas de mouvement gagnant
+    }
+    
+    /**
+     * @dev Vérifie si un joueur a gagné
+     */
+    function checkWin(uint8[9] memory board, uint8 player) internal pure returns (bool) {
+        // Lignes
+        if (board[0] == player && board[1] == player && board[2] == player) return true;
+        if (board[3] == player && board[4] == player && board[5] == player) return true;
+        if (board[6] == player && board[7] == player && board[8] == player) return true;
+        
+        // Colonnes
+        if (board[0] == player && board[3] == player && board[6] == player) return true;
+        if (board[1] == player && board[4] == player && board[7] == player) return true;
+        if (board[2] == player && board[5] == player && board[8] == player) return true;
+        
+        // Diagonales
+        if (board[0] == player && board[4] == player && board[8] == player) return true;
+        if (board[2] == player && board[4] == player && board[6] == player) return true;
+        
+        return false;
+    }
+    
+    /**
+     * @dev Termine une partie et met à jour les statistiques
+     */
+    function endGame(address player, GameStatus status) internal {
+        Game storage game = activeGames[player];
+        game.status = status;
+        game.endTime = block.timestamp;
+        
+        uint256 duration = game.endTime - game.startTime;
+        
+        // Mettre à jour les statistiques
+        PlayerStats storage stats = playerStats[player];
+        stats.gamesPlayed++;
+        stats.totalMoves += game.moveCount;
+        
+        if (status == GameStatus.PlayerWin) {
+            stats.wins++;
+            stats.currentStreak++;
+            
+            if (stats.currentStreak > stats.bestStreak) {
+                stats.bestStreak = stats.currentStreak;
+                emit NewRecord(player, "Meilleure serie", stats.bestStreak);
+            }
+            
+            if (stats.fastestWin == 0 || duration < stats.fastestWin) {
+                stats.fastestWin = duration;
+                emit NewRecord(player, "Victoire la plus rapide", duration);
+            }
+        } else if (status == GameStatus.AIWin) {
+            stats.losses++;
+            stats.currentStreak = 0;
+        } else if (status == GameStatus.Draw) {
+            stats.draws++;
+        }
+        
+        emit GameEnded(player, status, duration);
+    }
+    
+    /**
+     * @dev Abandonne la partie en cours
+     */
+    function forfeitGame() external {
+        Game storage game = activeGames[msg.sender];
+        require(game.status == GameStatus.Active, "Aucune partie active");
+        
+        endGame(msg.sender, GameStatus.Abandoned);
+        playerStats[msg.sender].losses++;
+        playerStats[msg.sender].currentStreak = 0;
+    }
+    
+    /**
+     * @dev Récupère le plateau de jeu actuel
+     */
+    function getBoard(address player) external view returns (uint8[9] memory) {
+        return activeGames[player].board;
+    }
+    
+    /**
+     * @dev Récupère les statistiques d'un joueur
+     */
+    function getPlayerStats(address player) external view returns (
+        uint256 gamesPlayed,
+        uint256 wins,
+        uint256 losses,
+        uint256 draws,
+        uint256 winRate,
+        uint256 currentStreak,
+        uint256 bestStreak,
+        uint256 fastestWin
+    ) {
+        PlayerStats memory stats = playerStats[player];
+        uint256 rate = 0;
+        if (stats.gamesPlayed > 0) {
+            rate = (stats.wins * 10000) / stats.gamesPlayed; // Winrate * 100
+        }
+        
+        return (
+            stats.gamesPlayed,
+            stats.wins,
+            stats.losses,
+            stats.draws,
+            rate,
+            stats.currentStreak,
+            stats.bestStreak,
+            stats.fastestWin
+        );
+    }
+    
+    /**
+     * @dev Récupère le leaderboard (top 10)
+     */
+    function getLeaderboard() external view returns (LeaderboardEntry[] memory) {
+        uint256 playerCount = players.length;
+        if (playerCount == 0) {
+            return new LeaderboardEntry[](0);
+        }
+        
+        uint256 size = playerCount > 10 ? 10 : playerCount;
+        LeaderboardEntry[] memory leaderboard = new LeaderboardEntry[](playerCount);
+        
+        // Remplir le leaderboard
+        for (uint256 i = 0; i < playerCount; i++) {
+            address player = players[i];
+            PlayerStats memory stats = playerStats[player];
+            
+            uint256 winRate = 0;
+            if (stats.gamesPlayed > 0) {
+                winRate = (stats.wins * 10000) / stats.gamesPlayed;
+            }
+            
+            leaderboard[i] = LeaderboardEntry({
+                player: player,
+                wins: stats.wins,
+                winRate: winRate,
+                bestStreak: stats.bestStreak,
+                fastestWin: stats.fastestWin
+            });
+        }
+        
+        // Tri par nombre de victoires (bubble sort simple)
+        for (uint256 i = 0; i < playerCount - 1; i++) {
+            for (uint256 j = 0; j < playerCount - i - 1; j++) {
+                if (leaderboard[j].wins < leaderboard[j + 1].wins) {
+                    LeaderboardEntry memory temp = leaderboard[j];
+                    leaderboard[j] = leaderboard[j + 1];
+                    leaderboard[j + 1] = temp;
+                }
+            }
+        }
+        
+        // Retourner seulement le top 10
+        LeaderboardEntry[] memory top10 = new LeaderboardEntry[](size);
+        for (uint256 i = 0; i < size; i++) {
+            top10[i] = leaderboard[i];
+        }
+        
+        return top10;
+    }
+    
+    /**
+     * @dev Récupère le nombre total de joueurs
+     */
+    function getTotalPlayers() external view returns (uint256) {
+        return players.length;
+    }
+}
